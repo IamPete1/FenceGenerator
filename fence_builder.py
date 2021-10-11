@@ -8,9 +8,9 @@ import os
 import time
 import math
 
-#import cProfile, pstats, io
-#pr = cProfile.Profile()
-#pr.enable()
+import cProfile, pstats, io
+pr = cProfile.Profile()
+pr.enable()
 
 class fence_struct:
     def __init__(self, tag, tags):
@@ -20,11 +20,13 @@ class fence_struct:
             self.name = tags['name']
         self.ways = []
         self.area = None
+        self.num_nodes = None
 
 class way_struct:
     def __init__(self, ref, outer):
         self.ref = ref
         self.outer = outer
+        self.radius = None
 
 class node_struct:
     def __init__(self, lat, lon, len):
@@ -103,7 +105,7 @@ def combine_ways(ways, way_dict):
             if ways[i].outer != ways[j].outer:
                 # must be of same type to combine
                 continue
-            # get nodes for first  and second way
+            # get nodes for first and second way
             nodes_a = way_dict[ways[i].ref]
             nodes_b = way_dict[ways[j].ref]
 
@@ -184,6 +186,16 @@ def convert_to_cartesian(lat, lon, origin_lat, origin_lon):
         y[i] = wrap_180(lon[i] - origin_lon) * LATLON_TO_M * longitude_scale((lat[i]+origin_lat)*0.5)
     return x, y
 
+def convert_from_cartesian(x, y, origin_lat, origin_lon):
+    num_nodes = len(x)
+    lat = np.empty(num_nodes)
+    lon = np.empty(num_nodes)
+    for i in range(num_nodes):
+        dlat = x[i]/LATLON_TO_M
+        lon[i] = wrap_180(origin_lon + ((y[i]/LATLON_TO_M) / longitude_scale(origin_lat+dlat/2)))
+        lat[i] = origin_lat + dlat
+    return lat, lon
+
 def polygon_intersects(x, y):
     num_nodes = len(x)
     # compare each line with all others
@@ -203,7 +215,6 @@ def polygon_intersects(x, y):
                 l = 0
 
             if line_intersects((x[i], y[i]), (x[j], y[j]), (x[k], y[k]), (x[l], y[l])):
-            #if line_intersects_fast((x[i], y[i]), (x[j], y[j]), (x[k], y[k]), (x[l], y[l])):
                 return True
     return False
 
@@ -231,12 +242,6 @@ def line_intersects(seg1_start, seg1_end, seg2_start, seg2_end):
         else:
             # non-parallel and non-intersecting
             return False
-
-def ccw(A,B,C):
-    return (C[1]-A[1])*(B[0]-A[0]) > (B[1]-A[1])*(C[0]-A[0])
-
-def line_intersects_fast(A, B, C, D):
-    return ccw(A,C,D) != ccw(B,C,D) and ccw(A,B,C) != ccw(A,B,D)
 
 # https://github.com/rowanwins/sweepline-intersections
 def polygon_intersects_sweep(x, y):
@@ -285,7 +290,7 @@ def polygon_intersects_sweep(x, y):
 
     return False
 
-# Check for intersections between polygons
+# Check for intersections between polygons useing sweep line
 def polygon_polygon_intersection(x, y):
     num_poly = len(x)
 
@@ -334,6 +339,12 @@ def polygon_area(x, y):
         sum2 += y[i] * x[i+1]
     return abs(sum1 - sum2) * 0.5
 
+# as above for thee points
+def triangle_area(x, y):
+    sum1 = x[2] * y[0] + x[0] * y[1] + x[1] * y[2]
+    sum2 = x[0] * y[2] + y[0] * x[1] + y[1] * x[2]
+    return abs(sum1 - sum2) * 0.5
+
 def point_outside_polygon(point_x, point_y, poly_x, poly_y):
     # step through each edge pair-wise looking for crossings:
     num_nodes = len(poly_x)
@@ -344,24 +355,157 @@ def point_outside_polygon(point_x, point_y, poly_x, poly_y):
         j = i+1
         if j >= num_nodes:
             j = 0
-        #if (poly_y[i] > point_y) == (poly_y[j] > point_y):
+        if (poly_y[i] > point_y) == (poly_y[j] > point_y):
             # both ends of line are on the same side of the point
             # no intersection possible
-            #continue
+            continue
         if line_intersects((min_x, point_y), (point_x, point_y) , (poly_x[i], poly_y[i]), (poly_x[j], poly_y[j])):
             outside = not outside
 
     return outside
 
+def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
+    poly_len = {}
+    num_poly = len(x)
+    minimum_polygon = [False] * num_poly
+    circle_radius = [None] * num_poly
+    for i in range(num_poly):
+        poly_len[i] = len(x[i])
+        if poly_len[i] <= 3:
+            minimum_polygon[i] = True
+
+    if all(minimum_polygon):
+        # cant simplify any further
+        return x, y, circle_radius
+
+    if sum(poly_len.values()) <= min_nodes:
+        # already lower than min node threshold
+        return x, y, circle_radius
+
+    for i in range(num_poly):
+        # try replacing polygon with circle
+        center_x = np.mean(x[i])
+        center_y = np.mean(y[i])
+        radius = np.empty(poly_len[i])
+        for j in range(poly_len[i]):
+            radius[j] = math.sqrt(((x[i][j] - center_x) ** 2) + ((y[i][j] - center_y) ** 2))
+        radius = np.mean(radius)
+        circle_area = math.pi * (radius ** 2)
+        poly_area = polygon_area(x[i], y[i])
+        if abs(circle_area -  poly_area) < area_threshold:
+            x[i] = [center_x]
+            y[i] = [center_y]
+            circle_radius[i] = radius
+            minimum_polygon[i] = True
+            poly_len[i] = 1
+
+    if all(minimum_polygon):
+        # cant simplify any further
+        return x, y, circle_radius
+
+    area = [None] * num_poly
+    for i in range(num_poly):
+        area[i] = [None] * poly_len[i]
+        for j in range(poly_len[i]):
+            if minimum_polygon[i]:
+                continue
+            prev_point = j - 1
+            if prev_point < 0:
+                prev_point = poly_len[i] - 1
+
+            next_point = j + 1
+            if next_point >= poly_len[i]:
+                next_point = 0
+
+            area[i][j] = triangle_area([x[i][j], x[i][prev_point], x[i][next_point]], [y[i][j], y[i][prev_point], y[i][next_point]])
+
+    while True:
+        min_poly_val = math.inf
+        min_poly_index = None
+        index_min = None
+        for i in range(num_poly):
+            if minimum_polygon[i]:
+                continue
+            temp_index_min = min(range(len(area[i])), key=area[i].__getitem__)
+            if area[i][temp_index_min] < min_poly_val:
+                min_poly_index = i
+                index_min = temp_index_min
+                min_poly_val = area[i][index_min]
+
+        if min_poly_val > area_threshold and ((max_nodes == None) or (sum(poly_len.values()) <= max_nodes)):
+            # reached threshold, simplification complete
+            break
+
+        # test removeing point from polygon
+        x_temp = np.concatenate((x[min_poly_index][:index_min], x[min_poly_index][index_min+1:]))
+        y_temp = np.concatenate((y[min_poly_index][:index_min], y[min_poly_index][index_min+1:]))
+
+        if polygon_intersects_sweep(x_temp, y_temp):
+            # temporarily set to inf to allow finding of next smallest with min function
+            area[min_poly_index][index_min] = math.inf
+            continue
+
+        poly_len[min_poly_index] -= 1
+        if poly_len[min_poly_index] == 3:
+            # cant simplify past 3 points
+            minimum_polygon[min_poly_index] = True
+
+        x[min_poly_index] = x_temp
+        y[min_poly_index] = y_temp
+        del area[min_poly_index][index_min]
+
+        if all(minimum_polygon):
+            # cant simplify any further
+            break
+
+        if sum(poly_len.values()) <= min_nodes:
+            # reach min node threshold
+            break
+
+        # recalculate area for adjacent points
+        for j in [index_min-1, index_min]:
+
+            if j >= poly_len[min_poly_index]:
+                j = 0
+            elif j < 0:
+                j = poly_len[min_poly_index] - 1
+
+            prev_point = j - 1
+            if prev_point < 0:
+                prev_point = poly_len[min_poly_index] - 1
+
+            next_point = j + 1
+            if next_point >= poly_len[min_poly_index]:
+                next_point = 0
+
+            area[min_poly_index][j] = triangle_area([x[min_poly_index][j], x[min_poly_index][prev_point], x[min_poly_index][next_point]], [y[min_poly_index][j], y[min_poly_index][prev_point], y[min_poly_index][next_point]])
+
+        # recalculate any areas set to inf to avoid intersections
+        for j in range(poly_len[min_poly_index]):
+            if math.isinf(area[min_poly_index][j]):
+                prev_point = j - 1
+                if prev_point < 0:
+                    prev_point = poly_len[min_poly_index] - 1
+                next_point = j + 1
+                if next_point >= poly_len[min_poly_index]:
+                    next_point = 0
+                area[min_poly_index][j] = triangle_area([x[min_poly_index][j], x[min_poly_index][prev_point], x[min_poly_index][next_point]], [y[min_poly_index][j], y[min_poly_index][prev_point], y[min_poly_index][next_point]])
+
+    return x, y, circle_radius
+
 start_time = time.time()
 step_time = start_time
 
-input_file = 'map.osm'
-input_file = 'bigger_map.osm'
+#input_file = 'map.osm'
+#input_file = 'bigger_map.osm'
 input_file = 'switzerland-padded.osm.pbf'
 #input_file = 'switzerland-small-map.osm'
 #input_file = 'island.osm'
-#input_file ='Heidsee.osm'
+#input_file = 'Heidsee.osm'
+#input_file = 'tricky.osm'
+#input_file = 'map (5).osm'
+
+input_file = 'switzerland-padded - name = Bodensee.osm'
 
 # output directory
 directory = 'Fences'
@@ -372,9 +516,14 @@ tags = (('landuse', 'reservoir', None),
 
 # Only output fences with outer area larger than this
 area_threshold = 1000 # m^2
+area_threshold = 1000000 # m^2
 
-# search tags
-#tags = [['landuse', 'reservoir', None]]
+# simplication area removal treshold
+simp_area_threshold = 100 # m^2
+
+# don't simplify to less than this number of nodes
+simp_min_nodes = 50
+simp_max_nodes = 250
 
 # find all ways with given tags
 fences = []
@@ -468,6 +617,7 @@ for i, fence in enumerate(fences):
             way_dict[key] = way_dict[way.ref]
             way_count[key] = 1
             way_count[way.ref] -= 1
+            fences[i].ways[j].ref = key
 # remove unused items
 if max(way_count.values()) > 1:
     raise Exception('duplicate ways')
@@ -568,12 +718,43 @@ for i, fence in enumerate(fences):
 print("Pruned exclusions in %0.2fs" % (time.time() - step_time))
 step_time = time.time()
 
+# simplify polygons to given tolerance
+if simp_area_threshold:
+    for fence in fences:
+        num_poly = len(fence.ways)
+        x = num_poly*[None]
+        y = num_poly*[None]
+        node_count = 0
+        for i in range(num_poly):
+            nodes = way_dict[fence.ways[i].ref]
+            node_count += nodes.len
+            if i == 0:
+                origin = [nodes.lat[0], nodes.lon[0]]
+            x[i], y[i] = convert_to_cartesian(nodes.lat, nodes.lon, origin[0], origin[1])
+
+        x, y, radius = simplify_poly(x, y, simp_area_threshold, simp_min_nodes, simp_max_nodes)
+
+        simp_node_count = 0
+        for i in range(num_poly):
+            lat, lon = convert_from_cartesian(x[i], y[i], origin[0], origin[1])
+            way_dict[fence.ways[i].ref] = node_struct(lat, lon, len(lat))
+            fence.ways[i].radius = radius[i]
+            simp_node_count += way_dict[fence.ways[i].ref].len
+
+        fence.num_nodes = simp_node_count
+        debug_print('%s removed %i' % (fence.name, node_count - fence.num_nodes))
 
 
+    print("simplified in %0.2fs" % (time.time() - step_time))
+    step_time = time.time()
 
-# TODO:
-# make sure inners are within outer
-# simplify
+else:
+    # just count nodes
+    for fence in fences:
+        fence.num_nodes = 0
+        for way in fence.ways:
+            fence.num_nodes += way_dict[way.ref].len
+
 
 # make directory is not present
 if not os.path.exists(directory):
@@ -598,38 +779,43 @@ for fence in fences:
     name = name.replace('/', '_')
     name = name.replace('\\', '_')
 
-    num_nodes = 0
     num_ways = len(fence.ways)
     centroid_lat = np.empty(num_ways)
     centroid_lon = np.empty(num_ways)
-    has_valid_ways = False
     for i, way in enumerate(fence.ways):
-        removed = way_dict[way.ref]
-        centroid_lat[i] = np.mean(removed.lat)
-        centroid_lon[i] = np.mean(removed.lon)
-        num_nodes += removed.len
-        has_valid_ways |= way.outer
+        nodes = way_dict[way.ref]
+        centroid_lat[i] = np.mean(nodes.lat)
+        centroid_lon[i] = np.mean(nodes.lon)
 
-    f = open(os.path.join(directory, '%s - %s - %0.0f m^2 - %i nodes %f %f.waypoints' % (name, fence.tag, fence.area, num_nodes, np.mean(centroid_lat), np.mean(centroid_lon))), "w") 
+    f = open(os.path.join(directory, '%s - %s - %0.0f m^2 - %i nodes %f %f.waypoints' % (name, fence.tag, fence.area, fence.num_nodes, np.mean(centroid_lat), np.mean(centroid_lon))), "w") 
     f.write('QGC WPL 110\n')
     total_points = 1
     for way in fence.ways:
-        removed = way_dict[way.ref]
-        wp_type = 5001
-        if not way.outer:
-            wp_type = 5002
-        for i in range(removed.len):
-            f.write('%i 0 3 %i %i 0 0 0 %f %f %i 1\n' % (total_points, wp_type, removed.len, removed.lat[i], removed.lon[i], i))
+        nodes = way_dict[way.ref]
+        if nodes.len > 1:
+            # polygon point
+            wp_type = 5001
+            if not way.outer:
+                wp_type = 5002
+            for i in range(nodes.len):
+                f.write('%i 0 3 %i %i 0 0 0 %f %f %i 1\n' % (total_points, wp_type, nodes.len, nodes.lat[i], nodes.lon[i], i))
+                total_points += 1
+        else:
+            # Circle point
+            wp_type = 5003
+            if not way.outer:
+                wp_type = 5004
+            f.write('%i 0 3 %i %f 0 0 0 %f %f 0 1\n' % (total_points, wp_type, way.radius, nodes.lat[0], nodes.lon[0]))
             total_points += 1
     f.close()
     export_count += 1
 
-print("generated %i fences in %0.2fs" % (export_count, time.time() - step_time))
+print("saved %i fences in %0.2fs" % (export_count, time.time() - step_time))
 print("Took %0.2fs" % (time.time() - start_time))
 
-#pr.disable()
-#s = io.StringIO()
-#sortby = 'cumulative'
-#ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-#ps.print_stats()
-#print(s.getvalue())
+pr.disable()
+s = io.StringIO()
+sortby = 'cumulative'
+ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+ps.print_stats()
+print(s.getvalue())
