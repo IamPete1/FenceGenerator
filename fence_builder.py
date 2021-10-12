@@ -17,12 +17,13 @@ if profiling:
 class fence_struct:
     def __init__(self, tag, tags):
         self.tag = tag
-        self.name = None
+        self.name = 'unnamed'
         if (tags != None) and ('name' in tags):
             self.name = tags['name']
         self.ways = []
         self.area = None
         self.num_nodes = None
+        self.file_name = None
 
 class way_struct:
     def __init__(self, ref, outer):
@@ -548,16 +549,9 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
 start_time = time.time()
 step_time = start_time
 
-#input_file = 'map.osm'
-#input_file = 'bigger_map.osm'
-input_file = 'switzerland-padded.osm.pbf'
-#input_file = 'switzerland-small-map.osm'
-#input_file = 'island.osm'
-#input_file = 'Heidsee.osm'
-#input_file = 'tricky.osm'
-#input_file = 'map (5).osm'
-
-input_file = 'switzerland-padded - name = Bodensee.osm'
+#input_file = 'switzerland-padded.osm.pbf'
+input_file = 'wales-latest.osm.pbf'
+#input_file = 'britain-and-ireland-latest.osm.pbf'
 
 # output directory
 directory = 'Fences'
@@ -568,9 +562,8 @@ tags = (('landuse', 'reservoir', None),
 
 # Only output fences with outer area larger than this
 area_threshold = 1000 # m^2
-area_threshold = 1000000 # m^2
 
-# simplication area removal treshold
+# simplication area removal treshold, set None to disable
 simp_area_threshold = 100 # m^2
 
 # don't simplify to less than this number of nodes
@@ -665,6 +658,7 @@ for fence in fences:
 for i, fence in enumerate(fences):
     for j, way in enumerate(fence.ways):
         if way_count[way.ref] > 1:
+            # generate new key
             key = min(list(way_dict.keys())) - 1
             way_dict[key] = way_dict[way.ref]
             way_count[key] = 1
@@ -761,7 +755,9 @@ for i, fence in enumerate(fences):
         inner_nodes = way_dict[way.ref]
         inner_x, inner_y = convert_to_cartesian(inner_nodes.lat, inner_nodes.lon, nodes.lat[0], nodes.lon[0])
         if polygon_polygon_intersection([x,inner_x], [y,inner_y]):
-            raise Exception('polygon polygon intersection')
+            fence = None
+            print('polygon polygon intersection')
+            # Should handle this better
         # no polygon intersections, only need to check a single point
         way_valid[j] = not point_outside_polygon(inner_x[0], inner_y[0], x, y)
     if fences[i] and False in way_valid:
@@ -773,6 +769,8 @@ step_time = time.time()
 # simplify polygons to given tolerance
 if simp_area_threshold:
     for fence in fences:
+        if fence is None:
+            continue
         num_poly = len(fence.ways)
         x = num_poly*[None]
         y = num_poly*[None]
@@ -803,6 +801,8 @@ if simp_area_threshold:
 else:
     # just count nodes
     for fence in fences:
+        if fence is None:
+            continue
         fence.num_nodes = 0
         for way in fence.ways:
             fence.num_nodes += way_dict[way.ref].len
@@ -823,12 +823,9 @@ export_count = 0
 for fence in fences:
     if fence == None:
         continue
-    name = 'unnamed'
-    if fence.name:
-        name = fence.name
 
     # make sure there are no slashes
-    name = name.replace('/', '_')
+    name = fence.name.replace('/', '_')
     name = name.replace('\\', '_')
 
     num_ways = len(fence.ways)
@@ -839,7 +836,8 @@ for fence in fences:
         centroid_lat[i] = np.mean(nodes.lat)
         centroid_lon[i] = np.mean(nodes.lon)
 
-    f = open(os.path.join(directory, '%s - %s - %0.0f m^2 - %i nodes %f %f.waypoints' % (name, fence.tag, fence.area, fence.num_nodes, np.mean(centroid_lat), np.mean(centroid_lon))), "w") 
+    fence.file_name = '%s-%s:%f:%f.waypoints' % (name, fence.tag, np.mean(centroid_lat), np.mean(centroid_lon))
+    f = open(os.path.join(directory, fence.file_name), "w")
     f.write('QGC WPL 110\n')
     total_points = 1
     for way in fence.ways:
