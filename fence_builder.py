@@ -861,6 +861,32 @@ for fence in fences:
     export_count += 1
 
 print("saved %i fences in %0.2fs" % (export_count, time.time() - step_time))
+step_time = time.time()
+
+# export a .js file containing outer points of all polygons
+f = open(os.path.join(directory,'data.js'), "w") 
+f.write('var fence_data = [\n')
+for fence in fences:
+    if fence == None:
+        continue
+
+    for way in fence.ways:
+        generate = way_dict[way.ref]
+        if generate.len > 1 and way.outer:
+            f.write('{\n')
+            f.write('name: "%s",\n' % (fence.name.replace('"', '\\"')))
+            f.write('num_nodes: %i,\n' % (fence.num_nodes))
+            f.write('area: %f,\n' % (fence.area))
+            f.write('file_name: "%s",\n' % (fence.file_name.replace('"', '\\"')))
+            f.write('nodes: [')
+
+            for i in range(generate.len):
+                f.write('[%f, %f],\n' % (generate.lat[i], generate.lon[i]))
+            f.write(']},\n')
+f.write(']\n')
+
+
+print("generated js in %0.2fs" % (time.time() - step_time))
 print("Took %0.2fs" % (time.time() - start_time))
 
 
