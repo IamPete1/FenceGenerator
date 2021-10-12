@@ -1,5 +1,5 @@
 """
-Filter all objects with a given tag.
+Filter all objects with a given tag, to speed up debugging of problem area in big OSM file
 """
 
 import osmium as o

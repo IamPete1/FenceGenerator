@@ -1,5 +1,5 @@
 """
-
+Filter OSM file for Ways and Relations with given tags, then generate, simplify and export as ArduPilot Compatable Geo-Fence waypoint files
 """
 
 import osmium as o
