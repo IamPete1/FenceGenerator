@@ -464,31 +464,55 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
             # reached threshold, simplification complete
             break
 
-        # test removeing point from polygon
-        x_temp = np.concatenate((x[min_poly_index][:index_min], x[min_poly_index][index_min+1:]))
-        y_temp = np.concatenate((y[min_poly_index][:index_min], y[min_poly_index][index_min+1:]))
+        # test if removing this point will create a self intersections
+        new_intersect = False
+        prev_point = index_min - 1
+        if prev_point < 0:
+            prev_point = poly_len[min_poly_index] - 1
 
-        if polygon_intersects_sweep(x_temp, y_temp):
-            # temporarily set to inf to allow finding of next smallest with min function
+        prev_prev_point = prev_point - 1
+        if prev_prev_point < 0:
+            prev_prev_point = poly_len[min_poly_index] - 1
+
+        next_point = index_min + 1
+        if next_point >= poly_len[min_poly_index]:
+            next_point = 0
+
+        for i in range(poly_len[min_poly_index]):
+            # compare all lines except the adjacent
+            if i == prev_prev_point or i == prev_point or i == index_min or i == next_point:
+                continue
+            test_next_point = i + 1
+            if test_next_point >= poly_len[min_poly_index]:
+                test_next_point = 0
+            if line_intersects((x[min_poly_index][i], y[min_poly_index][i]), (x[min_poly_index][test_next_point], y[min_poly_index][test_next_point]), (x[min_poly_index][prev_point], y[min_poly_index][prev_point]), (x[min_poly_index][next_point], y[min_poly_index][next_point])):
+                new_intersect = True
+                break
+
+        if new_intersect:
+            # cant remove this point without creating intersection
             area[min_poly_index][index_min] = math.inf
             continue
+
+        x[min_poly_index] = np.concatenate((x[min_poly_index][:index_min], x[min_poly_index][index_min+1:]))
+        y[min_poly_index] = np.concatenate((y[min_poly_index][:index_min], y[min_poly_index][index_min+1:]))
+        del area[min_poly_index][index_min]
 
         poly_len[min_poly_index] -= 1
         if poly_len[min_poly_index] == 3:
             # cant simplify past 3 points
             minimum_polygon[min_poly_index] = True
 
-        x[min_poly_index] = x_temp
-        y[min_poly_index] = y_temp
-        del area[min_poly_index][index_min]
-
         if all(minimum_polygon):
             # cant simplify any further
             break
 
         if sum(poly_len.values()) <= min_nodes:
-            # reach min node threshold
+            # reached min node threshold
             break
+
+        # test if inner polygons are outside outer due to simplification and remove
+        # detect intersection between polygons and merge
 
         # recalculate area for adjacent points
         for j in [index_min-1, index_min]:
