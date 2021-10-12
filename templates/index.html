@@ -1,0 +1,93 @@
+<!doctype html>
+
+<head>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.6.0/dist/leaflet.css"
+        integrity="sha512-xwE/Az9zrjBIphAcBb3F6JVqxf46+CDLwfLMHloNu6KEQCAWi6HcDUbeOfBIptF7tcCzusKFjFw2yuvEpDL9wQ=="
+        crossorigin="" />
+    <!-- Make sure you put this AFTER Leaflet's CSS -->
+    <script src="https://unpkg.com/leaflet@1.6.0/dist/leaflet.js"
+        integrity="sha512-gZwIG9x3wUXg2hdXF6+rVkLF/0Vi9U8D2Ntg4Ga5I5BZpVkVxlJWbSQtXPSiUTtC0TjtGOmxa1AJPuV0CPthew=="
+        crossorigin=""></script>
+    <script src="{{url_for('static', filename='data.js')}}"></script>
+    <style type="text/css">
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            width: 100%
+        }
+
+        #wrapper {
+            min-height: 100%;
+        }
+
+        #mapid {
+            height: 100%;
+            width: 100%;
+        }
+
+        #menu {
+            position: absolute;
+            z-index: 2000;
+            width: 28%;
+            background-color: azure;
+            margin: 5px;
+            margin-top: 7%;
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        #radius {
+            width: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="menu">
+        <title>ArduPilot Water Geo-Fence Database</title>
+        <h1>ArduPilot Water Geo-Fence Database</h1>
+
+        <p>Fences generated from Open Street Map.</p>
+
+        <p>Name: <span id="name"></span></p>
+        <p>Area: <span id="area"></span></p>
+        <p>Nodes: <span id="nodes"></span></p>
+        <p>Download: <a id="download"></a></p>
+
+    </div>
+    <div class="wrapper">
+        <div id="mapid" style="position: absolute;height: 100%;"></div>
+    </div>
+</body>
+<br />
+<script>
+    var mymap = L.map('mapid').setView([51.505, -0.09], 5);
+    L.tileLayer('http://{s}.tile.osm.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(mymap);
+
+    var myRenderer = L.canvas({ padding: 0.5 });
+
+    for (var i = 0; i < fence_data.length; i += 1) {
+        L.polygon(fence_data[i].nodes, {
+                renderer: myRenderer,
+        }).addTo(mymap).on('click', function (e) {
+        document.getElementById("name").innerHTML = fence_data[e.target._leaflet_id].name;
+        document.getElementById("area").innerHTML = Math.round(fence_data[e.target._leaflet_id].area * 1e-6 * 100) / 100 + " Km^2";
+        document.getElementById("nodes").innerHTML = fence_data[e.target._leaflet_id].num_nodes;
+        document.getElementById("download").innerHTML = fence_data[e.target._leaflet_id].file_name
+        document.getElementById("download").href = 'Fences/' + fence_data[e.target._leaflet_id].file_name
+        L.DomEvent.stopPropagation()
+    })._leaflet_id = i;
+    }
+
+    mymap.on('click', function (e) {
+        document.getElementById("name").innerHTML = "";
+        document.getElementById("area").innerHTML = "";
+        document.getElementById("nodes").innerHTML = "";
+        document.getElementById("download").innerHTML = ""
+    });
+
+</script>
+<footer>Very heavily based on terrain generator Created by Stephen Dade, <a href=https://github.com/stephendade/terraingen>Source Code<a>.</footer>

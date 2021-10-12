@@ -1,3 +1,5 @@
 /.vscode
 *.osm*
 /Fences
+*/*.waypoints
+*/*.js
