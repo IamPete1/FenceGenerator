@@ -221,6 +221,32 @@ def polygon_intersects(x, y):
     return False
 
 def line_intersects(seg1_start, seg1_end, seg2_start, seg2_end):
+
+    # do Y first, X will not trip during sweep line intersection in X axis
+    min_y_1 = min(seg1_start[1], seg1_end[1])
+    max_y_2 = max(seg2_start[1], seg2_end[1])
+
+    if min_y_1 > max_y_2:
+        return False
+
+    max_y_1 = max(seg1_start[1], seg1_end[1])
+    min_y_2 = min(seg2_start[1], seg2_end[1])
+
+    if max_y_1 < min_y_2:
+        return False
+
+    min_x_1 = min(seg1_start[0], seg1_end[0])
+    max_x_2 = max(seg2_start[0], seg2_end[0])
+
+    if min_x_1 > max_x_2:
+        return False
+
+    max_x_1 = max(seg1_start[0], seg1_end[0])
+    min_x_2 = min(seg2_start[0], seg2_end[0])
+
+    if max_x_1 < min_x_2:
+        return False
+
     # implementation borrowed from http://stackoverflow.com/questions/563198/how-do-you-detect-where-two-line-segments-intersect
     r1 = (seg1_end[0] - seg1_start[0], seg1_end[1] - seg1_start[1])
     r2 = (seg2_end[0] - seg2_start[0], seg2_end[1] - seg2_start[1])
