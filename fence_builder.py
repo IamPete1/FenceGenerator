@@ -8,9 +8,11 @@ import os
 import time
 import math
 
-import cProfile, pstats, io
-pr = cProfile.Profile()
-pr.enable()
+profiling = False
+if profiling:
+    import cProfile, pstats, io
+    pr = cProfile.Profile()
+    pr.enable()
 
 class fence_struct:
     def __init__(self, tag, tags):
@@ -813,9 +815,12 @@ for fence in fences:
 print("saved %i fences in %0.2fs" % (export_count, time.time() - step_time))
 print("Took %0.2fs" % (time.time() - start_time))
 
-pr.disable()
-s = io.StringIO()
-sortby = 'cumulative'
-ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-ps.print_stats()
-print(s.getvalue())
+
+if profiling:
+    pr.disable()
+    s = io.StringIO()
+    sortby = 'cumulative'
+    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+    ps.print_stats()
+    print(s.getvalue())
+
