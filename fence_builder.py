@@ -8,35 +8,33 @@ import os
 import time
 import math
 
-profiling = False
-if profiling:
-    import cProfile, pstats, io
-    pr = cProfile.Profile()
-    pr.enable()
+input_file = 'switzerland-padded.osm.pbf'
+#input_file = 'wales-latest.osm.pbf'
+#input_file = 'britain-and-ireland-latest.osm.pbf'
+#input_file = 'europe-latest.osm.pbf'
+#input_file = 'bigger_map.osm'
+#input_file = 'Heidsee.osm'
 
-class fence_struct:
-    def __init__(self, tag, tags):
-        self.tag = tag
-        self.name = 'unnamed'
-        if (tags != None) and ('name' in tags):
-            self.name = tags['name']
-        self.ways = []
-        self.area = None
-        self.num_nodes = None
-        self.file_name = None
+# output directory
+directory = 'Fences'
 
-class way_struct:
-    def __init__(self, ref, outer):
-        self.ref = ref
-        self.outer = outer
-        self.radius = None
+# search tags
+tags = (('landuse', 'reservoir', None),
+        ('natural', 'water', ('lake', 'reservoir', 'basin', 'lagoon', 'pond')))
 
-class node_struct:
-    def __init__(self, lat, lon, len):
-        self.lat = lat
-        self.lon = lon
-        self.len = len
 
+
+# Only output fences with outer area larger than this
+area_threshold = 1000 # m^2
+
+# simplication area removal treshold, set None to disable
+simp_area_threshold = 100 # m^2
+
+# don't simplify to less than this number of nodes
+simp_min_nodes = 50
+simp_max_nodes = 250
+
+# check if given tags are in list of desired
 def check_tags(test_tags, desired_tags):
     for tag in desired_tags:
         if tag[0] in test_tags and test_tags[tag[0]] == tag[1]:
@@ -49,123 +47,102 @@ def check_tags(test_tags, desired_tags):
             return return_tag
     return None
 
-def debug_print(string):
-    if False:
-        print(string)
-
 # find all ways or multipolygons with the given tags
 class fence_search(o.SimpleHandler):
 
-    def __init__(self, fences, tags):
+    def __init__(self):
         super(fence_search, self).__init__()
-        self.fences = fences
-        self.tags = tags
 
-    def way(self, w):
-        found_tag = check_tags(w.tags, self.tags)
-        if found_tag != None:
-            new_fence = fence_struct(found_tag, w.tags)
-            new_fence.ways.append(way_struct(w.id, True))
-            self.fences.append(new_fence)
-
-    def relation(self, r):
-        if ('type' not in r.tags) or (r.tags['type'] != 'multipolygon'):
+    def area(self, a):
+        found_tag = check_tags(a.tags, tags)
+        if found_tag == None:
             return
-
-        found_tag = check_tags(r.tags, self.tags)
-        if found_tag != None:
-            new_fence = fence_struct(found_tag, r.tags)
-            for m in r.members:
-                if m.type == 'w':
-                    new_fence.ways.append(way_struct(m.ref, m.role == 'outer'))
-            self.fences.append(new_fence)
-
-# find the nodes in given ways
-class way_search(o.SimpleHandler):
-
-    def __init__(self, ways):
-        super(way_search, self).__init__()
-        self.ways = ways
-
-    def way(self, w):
-        if w.id in self.ways:
-            num_nodes = len(w.nodes)
-            lat = np.empty(num_nodes)
-            lon = np.empty(num_nodes)
-            for i in range(num_nodes):
-                if w.nodes[i].location.valid():
-                    lat[i] = w.nodes[i].location.lat
-                    lon[i] = w.nodes[i].location.lon
-                else:
-                    lat[i] = np.NaN
-                    lon[i] = np.NaN
-            self.ways[w.id] = node_struct(lat, lon, num_nodes)
-
-def combine_ways(ways, way_dict):
-    num_ways = len(ways)
-    for i in range(num_ways):
-        for j in range(i+1, num_ways):
-            if ways[i].outer != ways[j].outer:
-                # must be of same type to combine
+        name = 'unnamed'
+        if 'name' in a.tags:
+            name = a.tags['name']
+        for outer in a.outer_rings():
+            x = [None]
+            y = [None]
+            x[0], y[0], origin = get_polygon(outer, None)
+            if x is None:
+                # polygon not valid
                 continue
-            # get nodes for first and second way
-            nodes_a = way_dict[ways[i].ref]
-            nodes_b = way_dict[ways[j].ref]
-
-            if (nodes_a.lat[-1] == nodes_b.lat[0]) and (nodes_a.lon[-1] ==nodes_b.lon[0]):
-                debug_print('ways %i, %i share first point' % (i,j))
-                new_lat = np.concatenate([nodes_a.lat,nodes_b.lat[1:]])
-                new_lon = np.concatenate([nodes_a.lon,nodes_b.lon[1:]])
-
-            elif (nodes_a.lat[-1] == nodes_b.lat[-1]) and (nodes_a.lon[-1] ==nodes_b.lon[-1]):
-                debug_print('ways %i, %i share last point' % (i,j))
-                new_lat = np.concatenate([nodes_a.lat,np.flip(nodes_b.lat[0:-1])])
-                new_lon = np.concatenate([nodes_a.lon,np.flip(nodes_b.lon[0:-1])])
-
-            else:
+            area = polygon_area(x[0], y[0])
+            if area < area_threshold:
+                # too small
                 continue
+            # add inner polygons
+            for inner in a.inner_rings(outer):
+                x_temp, y_temp, _ = get_polygon(inner, origin)
+                if x_temp is None:
+                    continue
+                if polygon_polygon_intersection([x[0],x_temp], [y[0],y_temp]):
+                    continue
+                x.append(x_temp)
+                y.append(y_temp)
 
-            # make sure first and last point are not the same
-            new_length = nodes_a.len + nodes_b.len - 1
-            if (new_lat[0] ==  new_lat[-1]) and (new_lon[0] ==  new_lon[-1]):
-                new_length -= 1
+            # simplify to the given thresholds, possibly turing polygons in to circles
+            x, y, radius = simplify_poly(x, y)
 
-            # create new nodes and add to way dictionary, use negative keys to avoid conflict
-            key = min(min(list(way_dict.keys())),0) -1
-            way_dict[key] = node_struct(new_lat[0:new_length], new_lon[0:new_length], new_length)
+            # convert back to lat lon and get center for file name, avoid odd wrap issues by doing in cartesian
+            center = [0, 0]
+            num_poly = len(x)
+            num_nodes = 0
+            lat = [None] * num_poly
+            lon = [None] * num_poly
+            for i in range(num_poly):
+                center[0] += np.mean(x[i])
+                center[1] += np.mean(y[i])
+                lat[i], lon[i] = convert_from_cartesian(x[i], y[i], origin[0], origin[1])
+                num_nodes += len(lat[i])
+            center[0] /= num_poly
+            center[1] /= num_poly
+            center = convert_from_cartesian([center[0]], [center[1]], origin[0], origin[1])
 
-            # point first way to new key
-            ways[i].ref = key
+            # create waypoint file
+            file_name = save_to_file(name, found_tag, center, lat, lon, radius)
 
-            # remvoe second way
-            del ways[j]
+            # add to js index file, outer polygon only
+            js_file.write('{\n')
+            js_file.write('name: "%s",\n' % (name.replace('"', '\\"')))
+            js_file.write('num_nodes: %i,\n' % (num_nodes))
+            js_file.write('area: %f,\n' % (area))
+            js_file.write('file_name: "%s",\n' % (file_name.replace('"', '\\"')))
+            js_file.write('nodes: [')
+            for i in range(len(lat[0])):
+                js_file.write('[%f, %f],\n' % (lat[0][i], lon[0][i]))
+            js_file.write(']},\n')
 
-            # recursion!
-            return combine_ways(ways, way_dict)
-    return ways
+# get and check polygon from osmium structures
+def get_polygon(nodes, origin):
+    num_nodes = len(nodes)
+    outer_lat = np.empty(num_nodes)
+    outer_lon = np.empty(num_nodes)
+    for i in range(num_nodes):
+        if nodes[i].location.valid():
+            outer_lat[i] = nodes[i].location.lat
+            outer_lon[i] = nodes[i].location.lon
+        else:
+            outer_lat[i] = np.NaN
+            outer_lon[i] = np.NaN
+    # remove nan values
+    outer_lat = outer_lat[~np.isnan(outer_lat)]
+    outer_lon = outer_lon[~np.isnan(outer_lon)]
+    # make sure end point are not the same
+    if (outer_lat[0] == outer_lat[-1]) and (outer_lon[0] == outer_lon[-1]):
+        outer_lat = outer_lat[0:-1]
+        outer_lon = outer_lon[0:-1]
 
-def remove_ways_and_fences(fences, way_dict):
-    # remove fence ways that are no longer in the dictionary
-    for i, fence in enumerate(fences):
-        way_valid = len(fence.ways)*[True]
-        for j, way in enumerate(fence.ways):
-            if way.ref not in way_dict:
-                way_valid[j] = False
-        if False in way_valid:
-            fence.ways = [item for i, item in enumerate(fence.ways) if way_valid[i]]
-
-    # remove fences with no ways
-    fence_valid = len(fences)*[False]
-    for i, fence in enumerate(fences):
-        if len(fence.ways) == 0:
-            continue
-        for way in fence.ways:
-            if way.outer:
-                fence_valid[i] = True
-                break
-    if False in fence_valid:
-        fences = [item for i, item in enumerate(fences) if fence_valid[i]]
-    return fences
+    if len(outer_lat) < 3:
+        # not enough points
+        return None, None, None
+    if origin is None:
+        origin = (outer_lat[0], outer_lon[0])
+    x, y = convert_to_cartesian(outer_lat, outer_lon, origin[0], origin[1])
+    if polygon_intersects_sweep(x, y):
+        # self intersecting
+        return None, None, None
+    return x, y, origin
 
 def wrap_180(diff):
     if diff > 180:
@@ -178,7 +155,7 @@ def longitude_scale(lat):
     scale = math.cos(math.radians(lat))
     return max(scale, 0.01)
 
-# convert to xy relative to origin point
+# convert lat lon to xy relative to origin point
 LATLON_TO_M = 6378100 * (math.pi / 180)
 def convert_to_cartesian(lat, lon, origin_lat, origin_lon):
     num_nodes = len(lat)
@@ -189,6 +166,7 @@ def convert_to_cartesian(lat, lon, origin_lat, origin_lon):
         y[i] = wrap_180(lon[i] - origin_lon) * LATLON_TO_M * longitude_scale((lat[i]+origin_lat)*0.5)
     return x, y
 
+# convert xy back to lat lon
 def convert_from_cartesian(x, y, origin_lat, origin_lon):
     num_nodes = len(x)
     lat = np.empty(num_nodes)
@@ -199,28 +177,7 @@ def convert_from_cartesian(x, y, origin_lat, origin_lon):
         lat[i] = origin_lat + dlat
     return lat, lon
 
-def polygon_intersects(x, y):
-    num_nodes = len(x)
-    # compare each line with all others
-    for i in range(num_nodes):
-        j = i+1
-        if j >= num_nodes:
-            j = 0
-
-        # no point in testing adjacent segments start at i + 2
-        for k in  range(i+2,num_nodes):
-            if (i == 0) and (k == num_nodes-1):
-                # first and last lines are adjacent
-                continue
-
-            l = k+1
-            if l == num_nodes:
-                l = 0
-
-            if line_intersects((x[i], y[i]), (x[j], y[j]), (x[k], y[k]), (x[l], y[l])):
-                return True
-    return False
-
+# detect intersection between two points
 def line_intersects(seg1_start, seg1_end, seg2_start, seg2_end):
 
     # do Y first, X will not trip during sweep line intersection in X axis
@@ -272,6 +229,7 @@ def line_intersects(seg1_start, seg1_end, seg2_start, seg2_end):
             # non-parallel and non-intersecting
             return False
 
+# detect polygon self intersection
 # https://github.com/rowanwins/sweepline-intersections
 def polygon_intersects_sweep(x, y):
     # list of lines in polygon
@@ -319,7 +277,7 @@ def polygon_intersects_sweep(x, y):
 
     return False
 
-# Check for intersections between polygons useing sweep line
+# Check for intersections between multiple polygons useing sweep line
 def polygon_polygon_intersection(x, y):
     num_poly = len(x)
 
@@ -374,6 +332,7 @@ def triangle_area(x, y):
     sum2 = x[0] * y[2] + y[0] * x[1] + y[1] * x[2]
     return abs(sum1 - sum2) * 0.5
 
+# retrun true if point is outside of given polygon
 def point_outside_polygon(point_x, point_y, poly_x, poly_y):
     # step through each edge pair-wise looking for crossings:
     num_nodes = len(poly_x)
@@ -393,7 +352,10 @@ def point_outside_polygon(point_x, point_y, poly_x, poly_y):
 
     return outside
 
-def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
+# simplify polygon using Visvalingam–Whyatt
+# https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm
+# will not create self intersecting polygon
+def simplify_poly(x, y):
     poly_len = {}
     num_poly = len(x)
     minimum_polygon = [False] * num_poly
@@ -407,7 +369,7 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
         # cant simplify any further
         return x, y, circle_radius
 
-    if sum(poly_len.values()) <= min_nodes:
+    if sum(poly_len.values()) <= simp_min_nodes:
         # already lower than min node threshold
         return x, y, circle_radius
 
@@ -421,7 +383,7 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
         radius = np.mean(radius)
         circle_area = math.pi * (radius ** 2)
         poly_area = polygon_area(x[i], y[i])
-        if abs(circle_area -  poly_area) < area_threshold:
+        if abs(circle_area -  poly_area) < simp_area_threshold:
             x[i] = [center_x]
             y[i] = [center_y]
             circle_radius[i] = radius
@@ -461,7 +423,7 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
                 index_min = temp_index_min
                 min_poly_val = area[i][index_min]
 
-        if min_poly_val > area_threshold and ((max_nodes == None) or (sum(poly_len.values()) <= max_nodes)):
+        if min_poly_val > area_threshold and ((simp_max_nodes == None) or (sum(poly_len.values()) <= simp_max_nodes)):
             # reached threshold, simplification complete
             break
 
@@ -508,7 +470,7 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
             # cant simplify any further
             break
 
-        if sum(poly_len.values()) <= min_nodes:
+        if sum(poly_len.values()) <= simp_min_nodes:
             # reached min node threshold
             break
 
@@ -546,349 +508,66 @@ def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
 
     return x, y, circle_radius
 
-start_time = time.time()
-step_time = start_time
-
-#input_file = 'switzerland-padded.osm.pbf'
-input_file = 'wales-latest.osm.pbf'
-#input_file = 'britain-and-ireland-latest.osm.pbf'
-
-# output directory
-directory = 'Fences'
-
-# search tags
-tags = (('landuse', 'reservoir', None),
-        ('natural', 'water', ('lake', 'reservoir', 'basin', 'lagoon', 'pond')))
-
-# Only output fences with outer area larger than this
-area_threshold = 1000 # m^2
-
-# simplication area removal treshold, set None to disable
-simp_area_threshold = 100 # m^2
-
-# don't simplify to less than this number of nodes
-simp_min_nodes = 50
-simp_max_nodes = 250
-
-# find all ways with given tags
-fences = []
-fence_search(fences, tags).apply_file(input_file)
-
-if len(fences) == 0:
-    raise Exception('Could not find any fences')
-
-print("found %i fences in %0.2fs" % (len(fences), time.time() - step_time))
-step_time = time.time()
-
-# create list of all ways
-ways = []
-for fence in fences:
-    for way in fence.ways:
-        ways.append(way.ref)
-
-# dictionary of ways
-way_dict = dict.fromkeys(ways)
-
-# find locations associated with each way
-way_search(way_dict).apply_file(input_file, locations=True)
-
-print("got matching ways in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# remove bad locations and bad ways from dictionary
-for key, value in way_dict.items():
-    if value == None:
-        # way not found
-        debug_print('way %i no points' % (key))
-        continue
-    if not np.isnan(value.lat).any():
-        continue
-    # remove nan values
-    value.lat = value.lat[~np.isnan(value.lat)]
-    value.lon = value.lon[~np.isnan(value.lon)]
-    new_len = len(value.lat)
-    if len(value.lon) != new_len:
-        raise Exception('nubmer of lat and lon point not equal')
-    if new_len > 1:
-        debug_print('removed %i bad values from way %i' % (value.len - new_len, key))
-        value.len = new_len
-    else:
-        value = None
-        debug_print('removed way %i' % (key))
-    way_dict[key] = value
-
-
-# remove ways with no points
-filtered = {key: value for key, value in way_dict.items() if value is not None}
-way_dict.clear()
-way_dict.update(filtered)
-
-# remove fence ways that are no longer in the dictionary
-fences = remove_ways_and_fences(fences, way_dict)
-
-print("removed bad locations in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# combine ways that share points
-for i in range(len(fences)):
-    fences[i].ways = combine_ways(fences[i].ways, way_dict)
-
-# make sure ways do not have same start and end points
-for key, removed in way_dict.items():
-    if (removed.lat[0] ==  removed.lat[-1]) and (removed.lon[0] ==  removed.lon[-1]):
-        way_dict[key] = node_struct(removed.lat[0:-1], removed.lon[0:-1], removed.len -1)
-
-# remove ways with fewer than 3 points
-filtered = {key: value for key, value in way_dict.items() if value.len >= 3}
-way_dict.clear()
-way_dict.update(filtered)
-
-# remove fence ways that are no longer in the dictionary
-fences = remove_ways_and_fences(fences, way_dict)
-
-print("combined ways in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# check users of each way
-way_count = dict.fromkeys(way_dict.keys(), 0)
-for fence in fences:
-    for way in fence.ways:
-        way_count[way.ref] += 1
-# copy duplicated ways to new key
-for i, fence in enumerate(fences):
-    for j, way in enumerate(fence.ways):
-        if way_count[way.ref] > 1:
-            # generate new key
-            key = min(list(way_dict.keys())) - 1
-            way_dict[key] = way_dict[way.ref]
-            way_count[key] = 1
-            way_count[way.ref] -= 1
-            fences[i].ways[j].ref = key
-# remove unused items
-if max(way_count.values()) > 1:
-    raise Exception('duplicate ways')
-filtered = {key: value for key, value in way_dict.items() if way_count[key] == 1}
-way_dict.clear()
-way_dict.update(filtered)
-
-# make sure polygon's are not self intersecting
-for key, nodes in way_dict.items():
-    if nodes.len == 3:
-        # intersection not possible
-        continue
-    x, y = convert_to_cartesian(nodes.lat, nodes.lon, nodes.lat[0], nodes.lon[0])
-    if polygon_intersects_sweep(x, y):
-        way_dict[key] = None
-filtered = {key: value for key, value in way_dict.items() if value != None}
-way_dict.clear()
-way_dict.update(filtered)
-
-fences = remove_ways_and_fences(fences, way_dict)
-
-print("validated polygons in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# move each outer way to own fence
-new_fences = []
-for i, fence in enumerate(fences):
-    outer_fence = len(fence.ways)*[False]
-    for j, way in enumerate(fence.ways):
-        outer_fence[j] = way.outer
-    outer_count = outer_fence.count(True)
-    if outer_count == 1:
-        continue
-    outer_count = 0
-    for j, way in enumerate(fence.ways):
-        if way.outer:
-            outer_count += 1
-            if outer_count == 1:
-                # first way stays in original fence
-                outer_fence[j] = False
-                continue
-            new_fence = fence_struct(fence.tag, None)
-            if fence.name:
-                new_fence.name = ('%s - %i') % (fence.name, outer_count)
-            new_fence.ways.append(way)
-            for inner in fence.ways:
-                if inner.outer:
-                    continue
-                # add all inner zones to new fence
-                new_fence.ways.append(inner)
-            new_fences.append(new_fence)
-    # remove extra outers from original fence
-    fences[i].ways = [item for j, item in enumerate(fence.ways) if not outer_fence[j]]
-    if fence.name:
-        fence.name = ('%s - %i') % (fence.name, 1)
-fences.extend(new_fences)
-
-# remove fences with area less than threshold
-fence_valid = len(fences)*[False]
-for i, fence in enumerate(fences):
-    for way in fence.ways:
-        if way.outer:
-            nodes = way_dict[way.ref]
-            x, y = convert_to_cartesian(nodes.lat, nodes.lon, nodes.lat[0], nodes.lon[0])
-            fences[i].area = polygon_area(x, y)
-            if fences[i].area > area_threshold:
-                fence_valid[i] = True
-            break
-if False in fence_valid:
-    fences = [item for i, item in enumerate(fences) if fence_valid[i]]
-
-print("filtered by area in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# check inner polygons points are within outer
-for i, fence in enumerate(fences):
-    if len(fence.ways) == 1:
-        # single way must be a outer
-        continue
-    for way in fence.ways:
-        if way.outer:
-            nodes = way_dict[way.ref]
-            x, y = convert_to_cartesian(nodes.lat, nodes.lon, nodes.lat[0], nodes.lon[0])
-
-    way_valid = len(fence.ways)*[True]
-    for j, way in enumerate(fence.ways):
-        if way.outer:
-            continue
-        inner_nodes = way_dict[way.ref]
-        inner_x, inner_y = convert_to_cartesian(inner_nodes.lat, inner_nodes.lon, nodes.lat[0], nodes.lon[0])
-        if polygon_polygon_intersection([x,inner_x], [y,inner_y]):
-            fence = None
-            print('polygon polygon intersection')
-            # Should handle this better
-        # no polygon intersections, only need to check a single point
-        way_valid[j] = not point_outside_polygon(inner_x[0], inner_y[0], x, y)
-    if fences[i] and False in way_valid:
-        fences[i].ways = [item for i, item in enumerate(fence.ways) if way_valid[i]]
-
-print("Pruned exclusions in %0.2fs" % (time.time() - step_time))
-step_time = time.time()
-
-# simplify polygons to given tolerance
-if simp_area_threshold:
-    for fence in fences:
-        if fence is None:
-            continue
-        num_poly = len(fence.ways)
-        x = num_poly*[None]
-        y = num_poly*[None]
-        node_count = 0
-        for i in range(num_poly):
-            nodes = way_dict[fence.ways[i].ref]
-            node_count += nodes.len
-            if i == 0:
-                origin = [nodes.lat[0], nodes.lon[0]]
-            x[i], y[i] = convert_to_cartesian(nodes.lat, nodes.lon, origin[0], origin[1])
-
-        x, y, radius = simplify_poly(x, y, simp_area_threshold, simp_min_nodes, simp_max_nodes)
-
-        simp_node_count = 0
-        for i in range(num_poly):
-            lat, lon = convert_from_cartesian(x[i], y[i], origin[0], origin[1])
-            way_dict[fence.ways[i].ref] = node_struct(lat, lon, len(lat))
-            fence.ways[i].radius = radius[i]
-            simp_node_count += way_dict[fence.ways[i].ref].len
-
-        fence.num_nodes = simp_node_count
-        debug_print('%s removed %i' % (fence.name, node_count - fence.num_nodes))
-
-
-    print("simplified in %0.2fs" % (time.time() - step_time))
-    step_time = time.time()
-
-else:
-    # just count nodes
-    for fence in fences:
-        if fence is None:
-            continue
-        fence.num_nodes = 0
-        for way in fence.ways:
-            fence.num_nodes += way_dict[way.ref].len
-
-
-# make directory is not present
-if not os.path.exists(directory):
-    os.mkdir(directory)
-
-# delete existing fences in directory
-files = os.listdir(directory)
-for inners in files:
-    if inners.endswith(".waypoints"):
-        os.remove(os.path.join(directory, inners))
-
-# go through each fence and write to file
-export_count = 0
-for fence in fences:
-    if fence == None:
-        continue
-
-    # make sure there are no slashes
-    name = fence.name.replace('/', '_')
+def save_to_file(name, tag, center, lat, lon, radius):
+    # sanitize name for use in file
+    name = name.replace('/', '_')
     name = name.replace('\\', '_')
 
-    num_ways = len(fence.ways)
-    centroid_lat = np.empty(num_ways)
-    centroid_lon = np.empty(num_ways)
-    for i, way in enumerate(fence.ways):
-        nodes = way_dict[way.ref]
-        centroid_lat[i] = np.mean(nodes.lat)
-        centroid_lon[i] = np.mean(nodes.lon)
-
-    fence.file_name = '%s-%s:%f:%f.waypoints' % (name, fence.tag, np.mean(centroid_lat), np.mean(centroid_lon))
-    f = open(os.path.join(directory, fence.file_name), "w")
+    file_name = '%s-%s:%f:%f.waypoints' % (name, tag, center[0], center[1])
+    f = open(os.path.join(directory, file_name), "w")
     f.write('QGC WPL 110\n')
     total_points = 1
-    for way in fence.ways:
-        nodes = way_dict[way.ref]
-        if nodes.len > 1:
-            # polygon point
-            wp_type = 5001
-            if not way.outer:
-                wp_type = 5002
-            for i in range(nodes.len):
-                f.write('%i 0 3 %i %i 0 0 0 %f %f %i 1\n' % (total_points, wp_type, nodes.len, nodes.lat[i], nodes.lon[i], i))
+    for i in range(len(lat)):
+        if i == 0:
+            # first point is always inclusion
+            poly_type = 5001
+            circle_type = 5003
+        else:
+            # all others exclusion
+            poly_type = 5002
+            circle_type = 5004
+        
+        if radius[i] is None:
+            # polygon points
+            length = len(lat[i])
+            for j in range(length):
+                f.write('%i 0 3 %i %i 0 0 0 %f %f %i 1\n' % (total_points, poly_type, length, lat[i][j], lon[i][j], j))
                 total_points += 1
         else:
             # Circle point
-            wp_type = 5003
-            if not way.outer:
-                wp_type = 5004
-            f.write('%i 0 3 %i %f 0 0 0 %f %f 0 1\n' % (total_points, wp_type, way.radius, nodes.lat[0], nodes.lon[0]))
+            f.write('%i 0 3 %i %f 0 0 0 %f %f 0 1\n' % (total_points, circle_type, radius[i], lat[i][0], lon[i][0]))
             total_points += 1
     f.close()
-    export_count += 1
+    return file_name
 
-print("saved %i fences in %0.2fs" % (export_count, time.time() - step_time))
-step_time = time.time()
+
+start_time = time.time()
+
+# enable or disable profiling for speed
+profiling = False
+if profiling:
+    import cProfile, pstats, io
+    pr = cProfile.Profile()
+    pr.enable()
+
+# delete existing fences in directory
+files = os.listdir(directory)
+for _file in files:
+    if _file.endswith(".waypoints"):
+        os.remove(os.path.join(directory, _file))
 
 # export a .js file containing outer points of all polygons
-f = open(os.path.join(directory,'data.js'), "w") 
-f.write('var fence_data = [\n')
-for fence in fences:
-    if fence == None:
-        continue
+js_file = open(os.path.join(directory,'data.js'), "w") 
+js_file.write('var fence_data = [\n')
 
-    for way in fence.ways:
-        generate = way_dict[way.ref]
-        if generate.len > 1 and way.outer:
-            f.write('{\n')
-            f.write('name: "%s",\n' % (fence.name.replace('"', '\\"')))
-            f.write('num_nodes: %i,\n' % (fence.num_nodes))
-            f.write('area: %f,\n' % (fence.area))
-            f.write('file_name: "%s",\n' % (fence.file_name.replace('"', '\\"')))
-            f.write('nodes: [')
+# search input file
+fence_search().apply_file(input_file)
 
-            for i in range(generate.len):
-                f.write('[%f, %f],\n' % (generate.lat[i], generate.lon[i]))
-            f.write(']},\n')
-f.write(']\n')
+# close js file
+js_file.write(']\n')
+js_file.close()
 
-
-print("generated js in %0.2fs" % (time.time() - step_time))
 print("Took %0.2fs" % (time.time() - start_time))
-
 
 if profiling:
     pr.disable()
@@ -897,4 +576,3 @@ if profiling:
     ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
     ps.print_stats()
     print(s.getvalue())
-
