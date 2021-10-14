@@ -23,11 +23,10 @@ tags = (('landuse', 'reservoir', None),
         ('natural', 'water', ('lake', 'reservoir', 'basin', 'lagoon', 'pond')))
 
 
-
 # Only output fences with outer area larger than this
-area_threshold = 1000 # m^2
+surface_area_threshold = 0.5 * 1e+6 # m^2
 
-# simplication area removal treshold, set None to disable
+# simplication area removal treshold, set 0 to disable area threshold, set None to disable simplification
 simp_area_threshold = 100 # m^2
 
 # don't simplify to less than this number of nodes
@@ -68,7 +67,7 @@ class fence_search(o.SimpleHandler):
                 # polygon not valid
                 continue
             area = polygon_area(x[0], y[0])
-            if area < area_threshold:
+            if area < surface_area_threshold:
                 # too small
                 continue
             # add inner polygons
@@ -356,10 +355,14 @@ def point_outside_polygon(point_x, point_y, poly_x, poly_y):
 # https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm
 # will not create self intersecting polygon
 def simplify_poly(x, y):
+    num_poly = len(x)
+    circle_radius = [None] * num_poly
+    if simp_area_threshold is None:
+        return x, y, circle_radius
+
     poly_len = {}
     num_poly = len(x)
     minimum_polygon = [False] * num_poly
-    circle_radius = [None] * num_poly
     for i in range(num_poly):
         poly_len[i] = len(x[i])
         if poly_len[i] <= 3:
@@ -423,7 +426,7 @@ def simplify_poly(x, y):
                 index_min = temp_index_min
                 min_poly_val = area[i][index_min]
 
-        if min_poly_val > area_threshold and ((simp_max_nodes == None) or (sum(poly_len.values()) <= simp_max_nodes)):
+        if min_poly_val > simp_area_threshold and ((simp_max_nodes == None) or (sum(poly_len.values()) <= simp_max_nodes)):
             # reached threshold, simplification complete
             break
 
@@ -561,7 +564,7 @@ js_file = open(os.path.join(directory,'data.js'), "w")
 js_file.write('var fence_data = [\n')
 
 # search input file
-fence_search().apply_file(input_file)
+fence_search().apply_file(input_file, idx='sparse_file_array')
 
 # close js file
 js_file.write(']\n')
