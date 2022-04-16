@@ -1,12 +1,12 @@
 <!doctype html>
 
 <head>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.6.0/dist/leaflet.css"
-        integrity="sha512-xwE/Az9zrjBIphAcBb3F6JVqxf46+CDLwfLMHloNu6KEQCAWi6HcDUbeOfBIptF7tcCzusKFjFw2yuvEpDL9wQ=="
-        crossorigin="" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+        integrity="sha512-xodZBNTC5n17Xt2atTPuE1HxjVMSvLVW9ocqUKLsCC5CXdbqCmblAshOMAS6/keqq/sMZMZ19scR4PsZChSR7A=="
+        crossorigin=""/>
     <!-- Make sure you put this AFTER Leaflet's CSS -->
-    <script src="https://unpkg.com/leaflet@1.6.0/dist/leaflet.js"
-        integrity="sha512-gZwIG9x3wUXg2hdXF6+rVkLF/0Vi9U8D2Ntg4Ga5I5BZpVkVxlJWbSQtXPSiUTtC0TjtGOmxa1AJPuV0CPthew=="
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"
+        integrity="sha512-XQoYMqMTK8LvdxXYG3nZ448hOEQiglfqkJs1NOQV44cWnUrBc8PkAOcXy20w0vlaXaVUearIOBhiXZ5V3ynxwA=="
         crossorigin=""></script>
     <script src="{{url_for('static', filename='data.js')}}"></script>
     <style type="text/css">
@@ -69,25 +69,76 @@
 
     var myRenderer = L.canvas({ padding: 0.5 });
 
-    for (var i = 0; i < fence_data.length; i += 1) {
-        L.polygon(fence_data[i].nodes, {
-                renderer: myRenderer,
-        }).addTo(mymap).on('click', function (e) {
-        document.getElementById("name").innerHTML = fence_data[e.target._leaflet_id].name;
-        document.getElementById("area").innerHTML = Math.round(fence_data[e.target._leaflet_id].area * 1e-6 * 100) / 100 + " Km^2";
-        document.getElementById("nodes").innerHTML = fence_data[e.target._leaflet_id].num_nodes;
-        document.getElementById("download").innerHTML = fence_data[e.target._leaflet_id].file_name
-        document.getElementById("download").href = 'Fences/' + fence_data[e.target._leaflet_id].file_name
-        L.DomEvent.stopPropagation()
-    })._leaflet_id = i;
-    }
+    var circle;
+    var lat = 51.5072;
+    var lon = 0.1276;
+
+    var polygons = [];
+    var polygon_index = {};
 
     mymap.on('click', function (e) {
         document.getElementById("name").innerHTML = "";
         document.getElementById("area").innerHTML = "";
         document.getElementById("nodes").innerHTML = "";
         document.getElementById("download").innerHTML = ""
+
+        lat = e.latlng.lat
+        lon = e.latlng.lng
+        // leaflet allows infinite longitudes, this wraps it to [-180, 180]
+        while (lon > 180) {
+            lon -= 360
+        }
+        while (lon < -180) {
+            lon += 360
+        }
+        plotCircleCoords()
     });
+
+    function plotCircleCoords() {
+        if (circle !== undefined) {
+            circle.removeFrom(mymap)
+        }
+        var radius = 200 * 1000;
+        circle = L.circle([lat, lon], {
+            color: 'red',
+            fillColor: '#f03',
+            fillOpacity: 0.1,
+            radius: radius,
+            interactive: false
+        }).addTo(mymap);
+        mymap.setView([lat, lon])
+
+        // remove all polygons
+        for (var i = 0; i < polygons.length; i += 1) {
+            polygons[i].remove()
+        }
+        polygons = [];
+        polygon_index = {};
+
+        // add polygons within circle
+        for (var i = 0; i < fence_data.length; i += 1) {
+
+            var center = L.latLng(fence_data[i].center[0], fence_data[i].center[1]);
+
+            if (circle.getLatLng().distanceTo(center) < radius) {
+                var polygon = L.polygon(fence_data[i].nodes, {
+                    renderer: myRenderer}).addTo(mymap).on('click', function (e) {
+                        var index = polygon_index[L.Util.stamp(e.target)];
+                        document.getElementById("name").innerHTML = fence_data[index].name;
+                        document.getElementById("area").innerHTML = Math.round(fence_data[index].area * 1e-6 * 100) / 100 + " Km^2";
+                        document.getElementById("nodes").innerHTML = fence_data[index].num_nodes;
+                        document.getElementById("download").innerHTML = fence_data[index].file_name
+                        document.getElementById("download").href = 'Fences/' + fence_data[index].file_name
+                        L.DomEvent.stopPropagation(e);
+                    });
+                polygon_index[L.Util.stamp(polygon)] = i;
+                polygons.push(polygon);
+            }
+        }
+
+    }
+
+    plotCircleCoords();
 
 </script>
 <footer>Very heavily based on terrain generator Created by Stephen Dade, <a href=https://github.com/stephendade/terraingen>Source Code<a>.</footer>
