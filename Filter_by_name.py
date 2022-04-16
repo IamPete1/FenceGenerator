@@ -69,7 +69,7 @@ features = search(tag_name, tag_value)
 features.apply_file(input_file)
 
 if (len(features.ways) + len(features.relations)) == 0:
-    print('Could no find name %s in %s' % (name, input_file))
+    print('Could no find name %s : %s in %s' % (tag_name, tag_value, input_file))
     exit()
 
 output_name = input_file.split('.')[0] + ' - ' + tag_name + ' = ' + tag_value + '.osm'

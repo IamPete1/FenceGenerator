@@ -81,7 +81,12 @@ class fence_search(o.SimpleHandler):
                 y.append(y_temp)
 
             # simplify to the given thresholds, possibly turing polygons in to circles
-            x, y, radius = simplify_poly(x, y)
+            x, y, radius = simplify_poly(x, y, simp_area_threshold, simp_min_nodes, simp_max_nodes)
+            if x is None:
+                print("%s: timeout" % (name))
+                print(found_tag)
+                return
+
 
             # convert back to lat lon and get center for file name, avoid odd wrap issues by doing in cartesian
             center = [0, 0]
@@ -101,16 +106,21 @@ class fence_search(o.SimpleHandler):
             # create waypoint file
             file_name = save_to_file(name, found_tag, center, lat, lon, radius)
 
+            # simplify further for display
+            x, y, radius = simplify_poly([x[0]], [y[0]], simp_area_threshold, 3, 10)
+            lat, lon = convert_from_cartesian(x[0], y[0], origin[0], origin[1])
+
             # add to js index file, outer polygon only
             js_file.write('{\n')
             js_file.write('name: "%s",\n' % (name.replace('"', '\\"')))
             js_file.write('num_nodes: %i,\n' % (num_nodes))
             js_file.write('area: %f,\n' % (area))
             js_file.write('file_name: "%s",\n' % (file_name.replace('"', '\\"')))
+            js_file.write('center: [%f, %f],\n' % (center[0], center[1]))
             js_file.write('nodes: [')
-            for i in range(len(lat[0])):
-                js_file.write('[%f, %f],\n' % (lat[0][i], lon[0][i]))
-            js_file.write(']},\n')
+            for i in range(len(lat)):
+                js_file.write('[%f, %f], ' % (lat[i], lon[i]))
+            js_file.write(']\n},\n')
 
 # get and check polygon from osmium structures
 def get_polygon(nodes, origin):
@@ -354,10 +364,10 @@ def point_outside_polygon(point_x, point_y, poly_x, poly_y):
 # simplify polygon using Visvalingam–Whyatt
 # https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm
 # will not create self intersecting polygon
-def simplify_poly(x, y):
+def simplify_poly(x, y, area_threshold, min_nodes, max_nodes):
     num_poly = len(x)
     circle_radius = [None] * num_poly
-    if simp_area_threshold is None:
+    if area_threshold is None:
         return x, y, circle_radius
 
     poly_len = {}
@@ -372,7 +382,7 @@ def simplify_poly(x, y):
         # cant simplify any further
         return x, y, circle_radius
 
-    if sum(poly_len.values()) <= simp_min_nodes:
+    if sum(poly_len.values()) <= min_nodes:
         # already lower than min node threshold
         return x, y, circle_radius
 
@@ -386,7 +396,7 @@ def simplify_poly(x, y):
         radius = np.mean(radius)
         circle_area = math.pi * (radius ** 2)
         poly_area = polygon_area(x[i], y[i])
-        if abs(circle_area -  poly_area) < simp_area_threshold:
+        if abs(circle_area -  poly_area) < area_threshold:
             x[i] = [center_x]
             y[i] = [center_y]
             circle_radius[i] = radius
@@ -413,7 +423,12 @@ def simplify_poly(x, y):
 
             area[i][j] = triangle_area([x[i][j], x[i][prev_point], x[i][next_point]], [y[i][j], y[i][prev_point], y[i][next_point]])
 
+    simplify_timeout = 60*2
+    simplify_start = time.time()
     while True:
+        if time.time() > (simplify_start + simplify_timeout):
+            return None, None, None
+
         min_poly_val = math.inf
         min_poly_index = None
         index_min = None
@@ -426,7 +441,7 @@ def simplify_poly(x, y):
                 index_min = temp_index_min
                 min_poly_val = area[i][index_min]
 
-        if min_poly_val > simp_area_threshold and ((simp_max_nodes == None) or (sum(poly_len.values()) <= simp_max_nodes)):
+        if min_poly_val > area_threshold and ((max_nodes == None) or (sum(poly_len.values()) <= max_nodes)):
             # reached threshold, simplification complete
             break
 
@@ -473,7 +488,7 @@ def simplify_poly(x, y):
             # cant simplify any further
             break
 
-        if sum(poly_len.values()) <= simp_min_nodes:
+        if sum(poly_len.values()) <= min_nodes:
             # reached min node threshold
             break
 
